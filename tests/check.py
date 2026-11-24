@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from main import _DATASETS, describe_columns, filter_rows, group_by, load_csv  # noqa: E402
+from mistralai import agents  # noqa: E402
 
 CSV = "\n".join(
     [
@@ -28,6 +30,16 @@ async def run() -> None:
     loaded = await load_csv(csv_content=CSV, file_name="sales.csv")
     assert loaded["rows_loaded"] == 6, loaded
     assert set(loaded["columns_loaded"]) == {"region", "product", "quantity", "price", "date"}, loaded
+
+    b64 = await load_csv(file_name="sales_b64.csv", base64_content=base64.b64encode(CSV.encode()).decode())
+    assert b64["rows_loaded"] == 6, b64
+
+    try:
+        await load_csv(file_name="x.csv", base64_content="не base64 !")
+    except agents.ToolError:
+        pass
+    else:
+        raise AssertionError("ожидали agents.ToolError для неверного base64")
 
     described = await describe_columns()
     by_name = {c["name"]: c for c in described["columns"]}
@@ -58,7 +70,7 @@ async def run() -> None:
 
     again = await describe_columns()
     assert again["rows"] == 6, again
-    assert again["file_name"] == "sales.csv", again
+    assert again["file_name"] == "sales_b64.csv", again
 
     print("OK: все проверки инструментов пройдены")
 

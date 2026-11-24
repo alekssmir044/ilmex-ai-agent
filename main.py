@@ -6,6 +6,7 @@ Google Drive и четыре фиксированных инструмента (
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import math
@@ -187,19 +188,29 @@ def _mask(df: pd.DataFrame, column: str, op: str, value: Any) -> pd.Series:
 async def load_csv(
     ctx: agents.ToolCallbackContext,
     /,
-    csv_content: Annotated[str, Field(description="Полное содержимое CSV-файла, прочитанного из Google Drive.")],
     file_name: Annotated[str, Field(description="Имя файла, как оно записано в Google Drive.")],
+    csv_content: Annotated[str | None, Field(description="Содержимое CSV как текст.")] = None,
+    base64_content: Annotated[str | None, Field(description="Содержимое CSV в base64, как его вернул download_file_content.")] = None,
 ) -> dict[str, Any]:
     """Загрузить CSV-файл в набор данных сессии для последующего анализа.
 
-    Сначала найди файл в Google Drive коннектором google_drive_mcp, прочитай его
-    инструментом чтения файлов коннектора, затем передай прочитанное сюда целиком,
-    не пересказывая: содержимое уходит в анализ, а не в ответ.
+    Сначала найди файл в Google Drive коннектором google_drive_mcp: search_files,
+    затем download_file_content c export_mime_type="text/csv" для Google-таблиц.
+    Передай результат сюда (base64_content или csv_content) целиком.
     """
-    if not csv_content.strip():
+    if (csv_content is None) == (base64_content is None):
+        raise agents.ToolError("Передай ровно один из аргументов: base64_content или csv_content.")
+    if csv_content is None:
+        try:
+            csv_content = base64.b64decode(base64_content or "", validate=True).decode("utf-8", errors="replace")
+        except Exception:
+            raise agents.ToolError(
+                "base64_content не удалось декодировать: передай содержимое, как его вернул download_file_content."
+            ) from None
+    if not (csv_content or "").strip():
         raise agents.ToolError("Содержимое файла пустое. Проверь, что в Drive лежит именно CSV.")
     try:
-        df = pd.read_csv(io.StringIO(csv_content), sep=None, engine="python", nrows=500_000)
+        df = pd.read_csv(io.StringIO(csv_content or ""), sep=None, engine="python", nrows=500_000)
     except Exception as error:
         raise agents.ToolError(
             f"Не удалось разобрать CSV ({error}). Возможно, это не CSV: файл в Drive может быть в формате XLSX, JSON и т.п."
@@ -208,7 +219,7 @@ async def load_csv(
         raise agents.ToolError("CSV разобран, но строк в нём нет.")
     truncated = csv_content.count("\n") + 1 > len(df) + 1
     _DATASETS[ctx.session.id] = df
-    _write_cache(ctx.session.id, csv_content, file_name)
+    _write_cache(ctx.session.id, csv_content or "", file_name)
     return {
         "file_name": file_name,
         "rows_loaded": int(len(df)),
@@ -310,9 +321,9 @@ agent = agents.Agent(
         "Ты — аналитик данных. Работай только на русском языке.\n"
         "\n"
         "Файл приходит ссылкой на Google Drive или названием. План работы:\n"
-        f"1. Найди файл коннектором {_DRIVE_CONNECTOR} (поиск по имени или разбор ссылки).\n"
-        f"2. Прочитай его содержимое инструментом чтения файлов этого коннектора.\n"
-        "3. Вызови data.load_csv, передав содержимое целиком, и кратко подтверди пользователю загрузку.\n"
+        f"1. Извлеки из ссылки идентификатор файла, а при его отсутствии найди файл инструментом search_files коннектора {_DRIVE_CONNECTOR}.\n"
+        "2. Скачай содержимое: download_file_content(file_id, export_mime_type=\"text/csv\") для Google-таблиц, для обычных .csv-файлов — без export_mime_type.\n"
+        "3. Вызови data.load_csv, передав file_name и полученный content как base64_content, и кратко подтверди пользователю загрузку.\n"
         "4. Отвечай на вопросы, вызывая data.describe_columns, data.filter_rows и data.group_by — каждый ответ строй строго на числах из результатов инструментов.\n"
         "\n"
         "Правила:\n"
